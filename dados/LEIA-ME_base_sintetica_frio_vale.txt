@@ -1,0 +1,51 @@
+BASE SINTETICA — FRIOVALE
+===========================
+
+Arquivo: base_sintetica_frio_vale.csv
+Registros: 1.200 (400 por perfil de fruta/estagio)
+
+COLUNAS
+-------
+timestamp: horario simulado da leitura.
+tipo_fruta: uva ou manga.
+estagio_maturacao: perfil informado para contextualizar a manga.
+temperatura_c: temperatura simulada em graus Celsius.
+umidade_relativa_pct: umidade relativa simulada em porcentagem.
+variacao_temperatura_c: diferenca em relacao a leitura anterior do mesmo perfil.
+variacao_umidade_pct: diferenca em relacao a leitura anterior do mesmo perfil.
+rotulo_referencia: normal ou anomalia; usado para avaliar os testes.
+cenario_simulado: explica qual condicao artificial foi gerada.
+
+IMPORTANTE
+----------
+1. Esta base e SINTETICA. Nao foi coletada pelo DHT22 nem representa uma viagem real.
+2. As faixas usadas como referencia sao simplificacoes para demonstracao:
+   - Uva de mesa: UC Davis indica armazenamento em torno de -1 a 0 °C e 90-95% UR.
+   - Manga madura-verde: UC Davis indica cerca de 13 °C.
+   - Manga parcialmente madura/madura: UC Davis indica cerca de 10 °C.
+   - Para manga, a referencia de umidade relativa e 90-95%.
+3. Os valores dependem de cultivar, maturidade, tempo de transporte, embalagem,
+   ventilacao, ponto de medicao e protocolo comercial. Confirmar com especialista
+   ou responsavel tecnico antes de transformar estas referencias em alertas reais.
+4. Para usar o modelo, nao misture indiscriminadamente os tres perfis:
+   treine um modelo por perfil (uva; manga verde-madura; manga parcialmente
+   madura/madura), ou inclua o perfil como variavel categórica devidamente codificada.
+5. O Isolation Forest pode ser treinado sem a coluna rotulo_referencia.
+   Use essa coluna apenas para avaliar os resultados, por exemplo comparando
+   anomalias identificadas com os casos simulados.
+6. Nao existem colunas de porta aberta nem acelerometro, pois esses sensores
+   ainda nao estao disponiveis no prototipo.
+7. Os logs do sistema nao foram incluidos como variaveis do modelo: logs tecnicos
+   (reinicio, falha de conexao, erro de leitura) devem ser tratados separadamente,
+   a menos que sejam transformados em eventos estruturados e relevantes.
+
+FONTES TECNICAS DE REFERENCIA
+-----------------------------
+UC Davis Postharvest Research and Extension Center — Grape:
+https://postharvest.ucdavis.edu/produce-facts-sheets/grape
+
+UC Davis Postharvest Research and Extension Center — Mango:
+https://postharvest.ucdavis.edu/ar/produce-facts-sheets/mango
+
+A base serve para prototipacao e testes iniciais, nao para certificar a
+conservacao da fruta ou substituir dados reais.
