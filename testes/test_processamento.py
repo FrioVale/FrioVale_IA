@@ -5,13 +5,17 @@ Nao requerem arquivo CSV externo: criam DataFrames sinteticos em memoria.
 
 import pandas as pd
 import pytest
+import numpy as np
 
 from src.processamento import (
     FEATURES_BASE,
     PERFIL_MANGA_MADURA,
     PERFIL_MANGA_VERDE,
     PERFIL_UVA,
+    ROTULO_ANOMALIA,
+    ROTULO_NORMAL,
     carregar_dados,
+    converter_rotulos_para_numericos,
     extrair_rotulos_referencia,
     preparar_features,
     separar_por_perfil,
@@ -70,6 +74,22 @@ def test_validar_dados_coluna_faltante():
     assert "temperatura_c" in erro
 
 
+def test_validar_dados_rotulo_invalido():
+    df = _df_sintetico()
+    df.loc[0, "rotulo_referencia"] = "invalido"
+    valido, erro = validar_dados(df)
+    assert valido is False
+    assert "invalido" in erro
+
+
+def test_validar_dados_valor_ausente_feature():
+    df = _df_sintetico()
+    df.loc[0, "temperatura_c"] = None
+    valido, erro = validar_dados(df)
+    assert valido is False
+    assert "temperatura_c" in erro
+
+
 def test_separar_por_perfil():
     df = _df_sintetico()
     valido, _ = validar_dados(df)
@@ -94,7 +114,7 @@ def test_preparar_features():
     X, features = preparar_features(df_uva)
 
     assert features == FEATURES_BASE
-    assert X.shape[1] == 2
+    assert X.shape[1] == 4
     assert X.shape[0] == len(df_uva)
 
 
@@ -106,6 +126,18 @@ def test_extrair_rotulos_referencia():
     rotulos = extrair_rotulos_referencia(df_uva)
     assert len(rotulos) == len(df_uva)
     assert set(rotulos).issubset({"normal", "anomalia"})
+
+
+def test_converter_rotulos_para_numericos():
+    rotulos = np.array(["normal", "anomalia", "normal", "anomalia"])
+    resultado = converter_rotulos_para_numericos(rotulos)
+    assert list(resultado) == [0, 1, 0, 1]
+
+
+def test_converter_rotulos_para_numericos_case_insensitive():
+    rotulos = np.array(["Normal", "ANOMALIA", " Normal ", " anomalia "])
+    resultado = converter_rotulos_para_numericos(rotulos)
+    assert list(resultado) == [0, 1, 0, 1]
 
 
 def test_carregar_dados_arquivo_inexistente(tmp_path):

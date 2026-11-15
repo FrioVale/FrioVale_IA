@@ -3,9 +3,9 @@
 Carrega os modelos treinados (.pkl) e realiza a analise de uma nova leitura,
 identificando o perfil da fruta e selecionando o modelo correspondente.
 
-O Isolation Forest retorna:
-- 1: comportamento dentro do padrao aprendido.
-- -1: possivel anomalia.
+O Random Forest Classifier retorna:
+- 0: comportamento normal (dentro do padrao aprendido).
+- 1: possivel anomalia (fora do padrao aprendido).
 
 Nao diagnostica qualidade da fruta; apenas sinaliza comportamento incomum.
 """
@@ -13,10 +13,11 @@ Nao diagnostica qualidade da fruta; apenas sinaliza comportamento incomum.
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import joblib
 import numpy as np
+import pandas as pd
 
 from src.processamento import (
     ESTAGIOS_MANGA_MADURA,
@@ -32,14 +33,28 @@ from src.processamento import (
 # Caminho padrao da pasta de modelos (ajustavel via construtor)
 PASTA_MODELOS_PADRAO: str = "modelos"
 
+# Nomes dos modelos versao 1 (mantidos para compatibilidade).
 ARQUIVO_MODELO_UVA: str = "modelo_uva.pkl"
 ARQUIVO_MODELO_MANGA_VERDE: str = "modelo_manga_verde.pkl"
 ARQUIVO_MODELO_MANGA_MADURA: str = "modelo_manga_madura.pkl"
 
+# Nomes dos modelos versao 2.
+ARQUIVO_MODELO_UVA_V2: str = "modelo_uva_v2.pkl"
+ARQUIVO_MODELO_MANGA_VERDE_V2: str = "modelo_manga_verde_v2.pkl"
+ARQUIVO_MODELO_MANGA_MADURA_V2: str = "modelo_manga_madura_v2.pkl"
+
+# Mapeamento padrao (versao 1).
 MAPEAMENTO_ARQUIVOS: Dict[str, str] = {
     PERFIL_UVA: ARQUIVO_MODELO_UVA,
     PERFIL_MANGA_VERDE: ARQUIVO_MODELO_MANGA_VERDE,
     PERFIL_MANGA_MADURA: ARQUIVO_MODELO_MANGA_MADURA,
+}
+
+# Mapeamento versao 2.
+MAPEAMENTO_ARQUIVOS_V2: Dict[str, str] = {
+    PERFIL_UVA: ARQUIVO_MODELO_UVA_V2,
+    PERFIL_MANGA_VERDE: ARQUIVO_MODELO_MANGA_VERDE_V2,
+    PERFIL_MANGA_MADURA: ARQUIVO_MODELO_MANGA_MADURA_V2,
 }
 
 # Mensagens padronizadas de retorno
@@ -48,17 +63,25 @@ MENSAGEM_ANOMALIA: str = (
     "Comportamento fora do padrao aprendido. Verifique as condições de transporte."
 )
 
+# Rotulo numerico para anomalia no Random Forest
+CLASSE_ANOMALIA: int = 1
+
 
 class PreditorIA:
     """Classe responsavel por carregar modelos e predizer anomalias."""
 
-    def __init__(self, pasta_modelos: str = PASTA_MODELOS_PADRAO) -> None:
+    def __init__(
+        self,
+        pasta_modelos: str = PASTA_MODELOS_PADRAO,
+        mapeamento_arquivos: Optional[Dict[str, str]] = None,
+    ) -> None:
         self.pasta_modelos = pasta_modelos
+        self.mapeamento_arquivos = mapeamento_arquivos or MAPEAMENTO_ARQUIVOS
         self.modelos: Dict[str, object] = {}
         self.carregados: bool = False
 
     def _caminho_modelo(self, perfil: str) -> str:
-        nome = MAPEAMENTO_ARQUIVOS.get(perfil)
+        nome = self.mapeamento_arquivos.get(perfil)
         if not nome:
             raise ValueError(f"Perfil desconhecido: {perfil}")
         return os.path.join(self.pasta_modelos, nome)
@@ -72,7 +95,7 @@ class PreditorIA:
             Mapeamento perfil -> True se carregado com sucesso.
         """
         status: Dict[str, bool] = {}
-        for perfil in MAPEAMENTO_ARQUIVOS.keys():
+        for perfil in self.mapeamento_arquivos.keys():
             caminho = self._caminho_modelo(perfil)
             if os.path.exists(caminho):
                 try:
@@ -127,8 +150,15 @@ class PreditorIA:
         estagio_maturacao: str,
         temperatura_c: float,
         umidade_relativa_pct: float,
+        variacao_temperatura_c: float,
+        variacao_umidade_pct: float,
     ) -> Dict:
         """Realiza a predicao de anomalia para uma nova leitura.
+
+        Utiliza exatamente as mesmas quatro features, na mesma ordem,
+        utilizadas durante o treinamento:
+        temperatura_c, umidade_relativa_pct,
+        variacao_temperatura_c, variacao_umidade_pct.
 
         Parametros
         ----------
@@ -136,6 +166,8 @@ class PreditorIA:
         estagio_maturacao : str
         temperatura_c : float
         umidade_relativa_pct : float
+        variacao_temperatura_c : float
+        variacao_umidade_pct : float
 
         Retorna
         -------
@@ -144,7 +176,9 @@ class PreditorIA:
             tipo_fruta (str), perfil (str) e valores recebidos.
         """
         if not self.carregados or not self.modelos:
-            raise RuntimeError("Nenhum modelo carregado. Chame carregar_modelos() primeiro.")
+            raise RuntimeError(
+                "Nenhum modelo carregado. Chame carregar_modelos() primeiro."
+            )
 
         perfil = self.identificar_perfil(tipo_fruta, estagio_maturacao)
         if perfil is None:
@@ -157,6 +191,8 @@ class PreditorIA:
                 "valores_recebidos": {
                     "temperatura_c": temperatura_c,
                     "umidade_relativa_pct": umidade_relativa_pct,
+                    "variacao_temperatura_c": variacao_temperatura_c,
+                    "variacao_umidade_pct": variacao_umidade_pct,
                 },
             }
 
@@ -171,13 +207,25 @@ class PreditorIA:
                 "valores_recebidos": {
                     "temperatura_c": temperatura_c,
                     "umidade_relativa_pct": umidade_relativa_pct,
+                    "variacao_temperatura_c": variacao_temperatura_c,
+                    "variacao_umidade_pct": variacao_umidade_pct,
                 },
             }
 
-        X = np.array([[temperatura_c, umidade_relativa_pct]], dtype=float)
+        # Preparar features na mesma ordem do treinamento
+        dados_entrada = {
+            "temperatura_c": [temperatura_c],
+            "umidade_relativa_pct": [umidade_relativa_pct],
+            "variacao_temperatura_c": [variacao_temperatura_c],
+            "variacao_umidade_pct": [variacao_umidade_pct],
+        }
+
+        df_entrada = pd.DataFrame(dados_entrada)
+        X, _ = preparar_features(df_entrada)
+
         predicao = modelo.predict(X)[0]
 
-        eh_anomalia = bool(predicao == -1)
+        eh_anomalia = bool(predicao == CLASSE_ANOMALIA)
         resultado = "anomalia" if eh_anomalia else "normal"
         mensagem = MENSAGEM_ANOMALIA if eh_anomalia else MENSAGEM_NORMAL
 
@@ -190,12 +238,29 @@ class PreditorIA:
             "valores_recebidos": {
                 "temperatura_c": temperatura_c,
                 "umidade_relativa_pct": umidade_relativa_pct,
+                "variacao_temperatura_c": variacao_temperatura_c,
+                "variacao_umidade_pct": variacao_umidade_pct,
             },
         }
 
 
-def carregar_preditor(pasta_modelos: str = PASTA_MODELOS_PADRAO) -> PreditorIA:
-    """Factory que cria e carrega um PreditorIA pronto para uso."""
-    preditor = PreditorIA(pasta_modelos=pasta_modelos)
+def carregar_preditor(
+    pasta_modelos: str = PASTA_MODELOS_PADRAO,
+    mapeamento_arquivos: Optional[Dict[str, str]] = None,
+) -> PreditorIA:
+    """Factory que cria e carrega um PreditorIA pronto para uso.
+
+    Parametros
+    ----------
+    pasta_modelos : str
+        Pasta contendo os arquivos .pkl.
+    mapeamento_arquivos : Optional[Dict[str, str]]
+        Mapeamento perfil -> nome do arquivo. Se None, usa o padrao v1.
+        Use MAPEAMENTO_ARQUIVOS_V2 para carregar os modelos versao 2.
+    """
+    preditor = PreditorIA(
+        pasta_modelos=pasta_modelos,
+        mapeamento_arquivos=mapeamento_arquivos,
+    )
     preditor.carregar_modelos()
     return preditor

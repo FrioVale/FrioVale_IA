@@ -2,17 +2,21 @@
 
 Responsabilidades:
 - Carregar a base sintética CSV.
-- Verificar qualidade (valores ausentes, inconsistências).
+- Verificar qualidade e consistência dos dados.
 - Separar registros por perfil de fruta e maturação.
-- Preparar as variáveis (features) para treinamento e predição.
+- Preparar as variáveis (features) e os rótulos para treinamento e predição.
+
+O rótulo de referência é utilizado como variável-alvo no aprendizado supervisionado.
 """
 
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
+import warnings
 
 import numpy as np
 import pandas as pd
+
 
 # Colunas obrigatórias que o CSV deve conter
 COLUNAS_OBRIGATORIAS: List[str] = [
@@ -27,135 +31,226 @@ COLUNAS_OBRIGATORIAS: List[str] = [
     "cenario_simulado",
 ]
 
-# Colunas usadas como features de treino/predicao (Início com apenas as
-# confiaveis, conforme solicitado: temperatura e umidade).
-FEATURES_BASE: List[str] = ["temperatura_c", "umidade_relativa_pct"]
+# Features utilizadas no treinamento e na predição
+FEATURES_BASE: List[str] = [
+    "temperatura_c",
+    "umidade_relativa_pct",
+    "variacao_temperatura_c",
+    "variacao_umidade_pct",
+]
 
-# Mapeamento de estagios de maturacao para os perfis de manga.
-# Os valores sao normalizados para minusculo na validacao.
-ESTAGIOS_MANGA_VERDE: List[str] = ["verde", "verde-madura"]
-ESTAGIOS_MANGA_MADURA: List[str] = ["parcialmente madura", "madura", "madura "]
+# Estágios de maturação reconhecidos para manga
+ESTAGIOS_MANGA_VERDE: List[str] = [
+    "verde",
+    "verde-madura",
+]
 
-# Nome dos perfis utilizados nos modelos
+ESTAGIOS_MANGA_MADURA: List[str] = [
+    "parcialmente madura",
+    "madura",
+]
+
+# Perfis utilizados nos modelos
 PERFIL_UVA: str = "uva"
 PERFIL_MANGA_VERDE: str = "manga_verde"
 PERFIL_MANGA_MADURA: str = "manga_madura"
 
+# Rótulos válidos para aprendizado supervisionado
+ROTULO_NORMAL: str = "normal"
+ROTULO_ANOMALIA: str = "anomalia"
+
+ROTULOS_VALIDOS: set = {ROTULO_NORMAL, ROTULO_ANOMALIA}
+
 
 def carregar_dados(caminho_csv: str) -> pd.DataFrame:
-    """Carrega o arquivo CSV da base sintética.
+    """Carrega o arquivo CSV da base sintética."""
+    return pd.read_csv(caminho_csv)
 
-    Parametros
-    ----------
-    caminho_csv : str
-        Caminho para o arquivo base_sintetica_frio_vale.csv.
 
-    Retorna
-    -------
-    pd.DataFrame
-        DataFrame com os dados brutos.
-    """
-    df = pd.read_csv(caminho_csv)
-    return df
+def _normalizar_texto(valor: object) -> str:
+    """Normaliza textos para comparação (remove espaços e converte para minúsculo)."""
+    if pd.isna(valor):
+        return ""
+
+    return str(valor).strip().lower()
 
 
 def validar_dados(df: pd.DataFrame) -> Tuple[bool, Optional[str]]:
-    """Verifica qualidade basica dos dados.
+    """Verifica a qualidade e a consistência básica dos dados.
 
     Verifica:
-    - Presenca das colunas obrigatorias.
-    - Valores ausentes nas colunas de feature.
-    - Tipos numericos nas colunas de temperatura e umidade.
+    - Presença das colunas obrigatórias.
+    - Existência de registros.
+    - Valores ausentes nas features e no rótulo.
+    - Valores numéricos e finitos nas quatro features.
+    - Validade dos rótulos de referência (apenas 'normal' e 'anomalia').
+    - Presença de tipo de fruta e estágio de maturação.
 
-    Parametros
-    ----------
-    df : pd.DataFrame
-        DataFrame carregado do CSV.
+    Não modifica o DataFrame original.
 
-    Retorna
-    -------
-    Tuple[bool, Optional[str]]
-        (True, None) se valido, ou (False, mensagem_erro) se invalido.
+    Retorna:
+        (True, None) se os dados forem válidos.
+        (False, mensagem) caso exista algum problema.
     """
-    colunas_faltantes = [c for c in COLUNAS_OBRIGATORIAS if c not in df.columns]
-    if colunas_faltantes:
-        return False, f"Colunas obrigatorias ausentes: {colunas_faltantes}"
 
-    # Verificar valores ausentes nas features base
-    ausentes = df[FEATURES_BASE].isnull().sum()
+    if df.empty:
+        return False, "A base de dados está vazia."
+
+    # Verificar colunas obrigatórias
+    colunas_faltantes = [
+        coluna
+        for coluna in COLUNAS_OBRIGATORIAS
+        if coluna not in df.columns
+    ]
+
+    if colunas_faltantes:
+        return False, (
+            f"Colunas obrigatórias ausentes: {colunas_faltantes}"
+        )
+
+    # Trabalhar em uma cópia para não modificar o DataFrame original
+    df_validacao = df.copy()
+
+    # Verificar valores ausentes nas features
+    ausentes = df_validacao[FEATURES_BASE].isnull().sum()
     colunas_com_ausentes = ausentes[ausentes > 0]
+
     if not colunas_com_ausentes.empty:
         return False, (
-            f"Valores ausentes encontrados nas features: "
+            "Valores ausentes encontrados nas features: "
             f"{colunas_com_ausentes.to_dict()}"
         )
 
-    # Garantir que temperatura e umidade sejam numericas
-    for col in FEATURES_BASE:
-        if not pd.api.types.is_numeric_dtype(df[col]):
-            try:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            except Exception as exc:  # noqa: BLE001
-                return False, f"Coluna '{col}' nao e numerica: {exc}"
-            if df[col].isnull().any():
-                return False, f"Coluna '{col}' contem valores nao numericos apos conversao."
+    # Verificar valores ausentes no rótulo de referência
+    if df_validacao["rotulo_referencia"].isnull().any():
+        return False, "Existem registros sem rótulo de referência."
+
+    # Verificar valores ausentes nos campos de identificação de perfil
+    if df_validacao["tipo_fruta"].isnull().any():
+        return False, "Existem registros sem identificação da fruta."
+
+    if df_validacao["estagio_maturacao"].isnull().any():
+        return False, "Existem registros sem estágio de maturação."
+
+    # Converter features para valores numéricos
+    for coluna in FEATURES_BASE:
+        df_validacao[coluna] = pd.to_numeric(
+            df_validacao[coluna],
+            errors="coerce",
+        )
+
+        if df_validacao[coluna].isnull().any():
+            return False, (
+                f"A coluna '{coluna}' contém valores não numéricos."
+            )
+
+        # Verificar valores infinitos
+        if not np.isfinite(df_validacao[coluna]).all():
+            return False, (
+                f"A coluna '{coluna}' contém valores infinitos."
+            )
+
+    # Normalizar e validar rótulos de referência
+    rotulos_normalizados = (
+        df_validacao["rotulo_referencia"]
+        .apply(_normalizar_texto)
+    )
+
+    rotulos_encontrados = set(rotulos_normalizados)
+
+    rotulos_invalidos = rotulos_encontrados - ROTULOS_VALIDOS
+
+    if rotulos_invalidos:
+        return False, (
+            "Rótulos de referência inválidos: "
+            f"{sorted(rotulos_invalidos)}. "
+            "Utilize 'normal' ou 'anomalia'."
+        )
 
     return True, None
 
 
-def _normalizar_texto(valor: str) -> str:
-    """Normaliza texto para comparacao de estagio de maturacao."""
-    if pd.isna(valor):
-        return ""
-    return str(valor).strip().lower()
+def separar_por_perfil(
+    df: pd.DataFrame,
+) -> Dict[str, pd.DataFrame]:
+    """Separa os dados em três perfis de frutas.
 
+    Perfis:
+    - Uva.
+    - Manga verde ou verde-madura.
+    - Manga parcialmente madura ou madura.
 
-def separar_por_perfil(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
-    """Separa os dados em tres perfis: uva, manga verde e manga madura.
+    Registros com fruta ou estágio de maturação não reconhecidos
+    não são classificados automaticamente e são ignorados com aviso.
 
-    Nao mistura perfis indiscriminadamente. Cada perfil gera seu proprio modelo.
-
-    Parametros
-    ----------
-    df : pd.DataFrame
-        DataFrame ja validado.
-
-    Retorna
-    -------
-    Dict[str, pd.DataFrame]
-        Chaves: 'uva', 'manga_verde', 'manga_madura'.
-        Valores: DataFrames filtrados (podem estar vazios se nao houver registros).
+    Não tenta inferir o estágio pela temperatura.
     """
+
     df = df.copy()
-    df["tipo_fruta_norm"] = df["tipo_fruta"].apply(_normalizar_texto)
-    df["estagio_norm"] = df["estagio_maturacao"].apply(_normalizar_texto)
 
+    df["tipo_fruta_norm"] = (
+        df["tipo_fruta"].apply(_normalizar_texto)
+    )
+
+    df["estagio_norm"] = (
+        df["estagio_maturacao"].apply(_normalizar_texto)
+    )
+
+    # Separar uvas
     mascara_uva = df["tipo_fruta_norm"] == "uva"
-    mascara_manga = df["tipo_fruta_norm"] == "manga"
-
     df_uva = df[mascara_uva].copy()
 
+    # Separar mangas
+    mascara_manga = df["tipo_fruta_norm"] == "manga"
     df_manga = df[mascara_manga].copy()
-    mascara_verde = df_manga["estagio_norm"].isin(
-        [e.lower() for e in ESTAGIOS_MANGA_VERDE]
-    )
-    mascara_madura = df_manga["estagio_norm"].isin(
-        [e.lower() for e in ESTAGIOS_MANGA_MADURA]
-    )
+
+    # Classificar mangas pelo estágio informado
+    estagios_verde_lower = [e.lower() for e in ESTAGIOS_MANGA_VERDE]
+    estagios_madura_lower = [e.lower() for e in ESTAGIOS_MANGA_MADURA]
+
+    mascara_verde = df_manga["estagio_norm"].isin(estagios_verde_lower)
+    mascara_madura = df_manga["estagio_norm"].isin(estagios_madura_lower)
 
     df_manga_verde = df_manga[mascara_verde].copy()
     df_manga_madura = df_manga[mascara_madura].copy()
 
-    # Caso exista manga com estagio nao mapeado, atribuimos ao mais proximo
-    # com base na faixa de temperatura (heuristica simples de seguranca).
-    nao_mapeado = df_manga[~mascara_verde & ~mascara_madura]
+    # Identificar mangas com estágio não reconhecido
+    nao_mapeado = df_manga[
+        ~mascara_verde & ~mascara_madura
+    ]
+
     if not nao_mapeado.empty:
-        # Tentar inferir pela temperatura media: manga verde costuma ser mais fria
-        media_temp = nao_mapeado["temperatura_c"].mean()
-        if media_temp <= 12:
-            df_manga_verde = pd.concat([df_manga_verde, nao_mapeado], ignore_index=True)
-        else:
-            df_manga_madura = pd.concat([df_manga_madura, nao_mapeado], ignore_index=True)
+        estagios_desconhecidos = (
+            nao_mapeado["estagio_maturacao"]
+            .drop_duplicates()
+            .tolist()
+        )
+
+        warnings.warn(
+            "Existem mangas com estágio de maturação não reconhecido. "
+            "Esses registros foram ignorados: "
+            f"{estagios_desconhecidos}",
+            stacklevel=2,
+        )
+
+    # Identificar frutas não contempladas pelos modelos
+    frutas_desconhecidas = df[
+        ~df["tipo_fruta_norm"].isin(["uva", "manga"])
+    ]
+
+    if not frutas_desconhecidas.empty:
+        tipos_desconhecidos = (
+            frutas_desconhecidas["tipo_fruta"]
+            .drop_duplicates()
+            .tolist()
+        )
+
+        warnings.warn(
+            "Existem frutas sem perfil de modelo cadastrado. "
+            "Esses registros foram ignorados: "
+            f"{tipos_desconhecidos}",
+            stacklevel=2,
+        )
 
     return {
         PERFIL_UVA: df_uva,
@@ -164,35 +259,81 @@ def separar_por_perfil(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     }
 
 
-def preparar_features(df_perfil: pd.DataFrame) -> Tuple[np.ndarray, List[str]]:
-    """Prepara a matriz de features (X) a partir de um DataFrame de perfil.
+def preparar_features(
+    df_perfil: pd.DataFrame,
+) -> Tuple[np.ndarray, List[str]]:
+    """Prepara a matriz de features (X) para treinamento ou predição.
 
-    Parametros
-    ----------
-    df_perfil : pd.DataFrame
-        DataFrame de um perfil especifico (uva, manga_verde ou manga_madura).
+    Utiliza exatamente as quatro variáveis definidas em FEATURES_BASE,
+    na mesma ordem, para garantir compatibilidade entre treinamento e predição.
 
-    Retorna
-    -------
-    Tuple[np.ndarray, List[str]]
-        Matriz numerica X e lista com os nomes das features utilizadas.
+    Não utiliza rótulos de referência como features.
     """
+
+    if df_perfil.empty:
+        raise ValueError(
+            "Não existem registros para preparar as features."
+        )
+
+    colunas_ausentes = [
+        coluna
+        for coluna in FEATURES_BASE
+        if coluna not in df_perfil.columns
+    ]
+
+    if colunas_ausentes:
+        raise ValueError(
+            f"Features ausentes: {colunas_ausentes}"
+        )
+
     X = df_perfil[FEATURES_BASE].to_numpy(dtype=float)
-    return X, FEATURES_BASE
+
+    if not np.isfinite(X).all():
+        raise ValueError(
+            "As features contêm valores inválidos ou infinitos."
+        )
+
+    return X, FEATURES_BASE.copy()
 
 
-def extrair_rotulos_referencia(df_perfil: pd.DataFrame) -> np.ndarray:
-    """Extrai o rotulo de referencia (apenas para avaliacao, nunca para treino).
+def extrair_rotulos_referencia(
+    df_perfil: pd.DataFrame,
+) -> np.ndarray:
+    """Extrai os rótulos de referência para uso como variável-alvo (y).
 
-    Parametros
-    ----------
-    df_perfil : pd.DataFrame
-
-    Retorna
-    -------
-    np.ndarray
-        Array com os rotulos ('normal' ou 'anomalia').
+    Retorna:
+        Array contendo 'normal' ou 'anomalia' (strings normalizadas).
     """
+
     if "rotulo_referencia" not in df_perfil.columns:
         return np.array([])
-    return df_perfil["rotulo_referencia"].to_numpy()
+
+    return (
+        df_perfil["rotulo_referencia"]
+        .apply(_normalizar_texto)
+        .to_numpy()
+    )
+
+
+def converter_rotulos_para_numericos(
+    rotulos: np.ndarray,
+) -> np.ndarray:
+    """Converte rótulos textuais para classes numéricas.
+
+    Mapeamento:
+        'normal'  -> 0
+        'anomalia' -> 1
+
+    Retorna:
+        Array de inteiros (0 ou 1).
+    """
+
+    mapeamento = {
+        ROTULO_NORMAL: 0,
+        ROTULO_ANOMALIA: 1,
+    }
+
+    return np.array(
+        [mapeamento[_normalizar_texto(r)] for r in rotulos],
+        dtype=int,
+    )

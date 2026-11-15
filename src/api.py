@@ -2,10 +2,10 @@
 
 Endpoints:
 - GET /health  -> status da API e modelos carregados
-- GET /modelos -> lista de modelos disponíveis
+- GET /modelos -> lista de modelos disponiveis
 - POST /prever -> analisa uma nova leitura e retorna se eh anomalia
 
-Integração futura com o backend principal (Spring Boot) ocorre por chamadas HTTP
+Integracao futura com o backend principal (Spring Boot) ocorre por chamadas HTTP
 a esses endpoints. Nao ha MQTT neste modulo.
 """
 
@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, confloat
 
 from src.predicao import (
+    MAPEAMENTO_ARQUIVOS_V2,
     PASTA_MODELOS_PADRAO,
     carregar_preditor,
 )
@@ -32,7 +33,12 @@ preditor = None
 
 
 class LeituraEntrada(BaseModel):
-    """Dados de entrada para predicao de anomalia."""
+    """Dados de entrada para predicao de anomalia.
+
+    Utiliza as mesmas quatro features do treinamento:
+    temperatura_c, umidade_relativa_pct,
+    variacao_temperatura_c, variacao_umidade_pct.
+    """
 
     tipo_fruta: str = Field(
         ..., description="Tipo da fruta (ex: uva, manga)"
@@ -45,6 +51,12 @@ class LeituraEntrada(BaseModel):
     )
     umidade_relativa_pct: confloat(ge=0, le=100) = Field(
         ..., description="Umidade relativa em porcentagem"
+    )
+    variacao_temperatura_c: confloat(ge=-50, le=50) = Field(
+        ..., description="Variacao de temperatura em graus Celsius"
+    )
+    variacao_umidade_pct: confloat(ge=0, le=100) = Field(
+        ..., description="Variacao de umidade relativa em porcentagem"
     )
 
 
@@ -63,7 +75,10 @@ class PrevisaoSaida(BaseModel):
 def carregar_modelos_na_inicializacao() -> None:
     """Carrega os modelos quando a API inicia."""
     global preditor
-    preditor = carregar_preditor(pasta_modelos=PASTA_MODELOS_PADRAO)
+    preditor = carregar_preditor(
+        pasta_modelos="modelos_v2",
+        mapeamento_arquivos=MAPEAMENTO_ARQUIVOS_V2,
+    )
     carregados = preditor.carregados
     print(f"API iniciada. Modelos carregados: {carregados}")
 
@@ -96,7 +111,7 @@ def prever(leitura: LeituraEntrada) -> Dict:
     """Recebe uma nova leitura e retorna se foi identificada anomalia.
 
     Nao diagnostica qualidade da fruta. Apenas sinaliza comportamento
-    fora do padrao aprendido pelo Isolation Forest.
+    fora do padrao aprendido pelo Random Forest Classifier.
     """
     if preditor is None or not preditor.carregados:
         raise HTTPException(
@@ -110,6 +125,8 @@ def prever(leitura: LeituraEntrada) -> Dict:
             estagio_maturacao=leitura.estagio_maturacao,
             temperatura_c=leitura.temperatura_c,
             umidade_relativa_pct=leitura.umidade_relativa_pct,
+            variacao_temperatura_c=leitura.variacao_temperatura_c,
+            variacao_umidade_pct=leitura.variacao_umidade_pct,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Erro na predicao: {str(exc)}")

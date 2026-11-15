@@ -19,7 +19,7 @@ A IA **não diagnostica** se a fruta está estragada e **não detecta abertura d
 - Python 3.9+
 - pandas — manipulação e exploração dos dados
 - NumPy — operações numéricas
-- scikit-learn — modelo Isolation Forest e métricas de avaliação
+- scikit-learn — **Random Forest Classifier** (aprendizado supervisionado) e métricas de avaliação
 - Joblib — salvar e carregar modelos treinados (`.pkl`)
 - FastAPI — API REST para integração com o backend principal
 - Uvicorn — servidor para executar a API
@@ -30,10 +30,10 @@ A IA **não diagnostica** se a fruta está estragada e **não detecta abertura d
 ```
 IA/
 ├── dados/                 # Coloque aqui o arquivo base_sintetica_frio_vale.csv
-├── modelos/               # Aqui serão salvos os modelos .pkl após o treinamento
+├── modelos/               # Aqui são salvos os modelos .pkl após o treinamento
 ├── src/
-│   ├── processamento.py   # Carregamento, validação e preparação dos dados
-│   ├── treinamento.py     # Treino e avaliação dos modelos por perfil de fruta
+│   ├── processamento.py   # Carregamento, validação e preparação dos dados e rótulos
+│   ├── treinamento.py     # Treino e avaliação dos Random Forest por perfil de fruta
 │   ├── predicao.py        # Carregamento de modelos e predição de novas leituras
 │   └── api.py             # Endpoints FastAPI: /health, /modelos, /prever
 ├── testes/
@@ -79,17 +79,21 @@ python treinamento.py
 
 O script irá:
 1. Carregar o CSV.
-2. Verificar valores ausentes e inconsistências.
-3. Separar os dados por perfil: **uva**, **manga verde-madura**, **manga parcialmente madura ou madura**.
-4. Treinar um Isolation Forest para cada perfil (usando apenas leituras normais).
-5. Avaliar com precisão, recall, F1-score e matriz de confusão.
-6. Salvar os modelos na pasta `modelos/`:
+2. Verificar valores ausentes, infinitos e inconsistências.
+3. Validar que os rótulos são apenas 'normal' ou 'anomalia'.
+4. Separar os dados por perfil: **uva**, **manga verde-madura**, **manga parcialmente madura ou madura**.
+5. Converter os rótulos para numéricos (normal=0, anomalia=1).
+6. Dividir cada perfil em treino e teste (com stratify quando possível).
+7. Treinar um **Random Forest Classifier** para cada perfil (aprendizado supervisionado).
+8. Avaliar com precisão, recall, F1-score e matriz de confusão — **apenas no conjunto de teste**.
+9. Salvar os modelos na pasta `modelos/`:
    - `modelo_uva.pkl`
    - `modelo_manga_verde.pkl`
    - `modelo_manga_madura.pkl`
 
-> Limitação: a avaliação é feita com dados sintéticos, portanto os resultados são indicativos
-> e não representam comportamento real de sensores em campo.
+> **Limitação importante:** a base sintética possui apenas 10 registros por perfil (8 normais e 2 anômalos).
+> Com tão poucos dados, as métricas de avaliação não são confiáveis para uso em produção.
+> Os modelos são um ponto de partida para demonstração e evolução futura.
 
 ## Como executar a API
 
@@ -129,7 +133,9 @@ Exemplo de corpo da requisição:
   "tipo_fruta": "uva",
   "estagio_maturacao": "mesa",
   "temperatura_c": -0.5,
-  "umidade_relativa_pct": 92.0
+  "umidade_relativa_pct": 92.0,
+  "variacao_temperatura_c": 0.3,
+  "variacao_umidade_pct": 1.0
 }
 ```
 
@@ -140,7 +146,14 @@ Exemplo de resposta:
   "anomalia": false,
   "resultado": "normal",
   "mensagem": "Comportamento dentro do padrão aprendido.",
-  "tipo_fruta": "uva"
+  "tipo_fruta": "uva",
+  "perfil": "uva",
+  "valores_recebidos": {
+    "temperatura_c": -0.5,
+    "umidade_relativa_pct": 92.0,
+    "variacao_temperatura_c": 0.3,
+    "variacao_umidade_pct": 1.0
+  }
 }
 ```
 
@@ -149,9 +162,9 @@ Exemplo de resposta:
 
 ## Como interpretar os resultados
 
-O Isolation Forest retorna:
-- `1` → comportamento dentro do padrão aprendido.
-- `-1` → possível anomalia.
+O Random Forest Classifier retorna:
+- `0` → comportamento normal (dentro do padrão aprendido).
+- `1` → possível anomalia (fora do padrão aprendido).
 
 A API traduz isso para `anomalia: false` ou `anomalia: true` com uma mensagem simples.
 Sempre que `anomalia: true`, o backend principal do FrioVale pode registrar o evento
@@ -164,7 +177,8 @@ O módulo funciona de forma independente via HTTP. No futuro, o backend do FrioV
 
 1. Receber leituras do ESP32 via MQTT.
 2. Armazenar as leituras no banco de dados.
-3. Enviar `temperatura_c`, `umidade_relativa_pct`, `tipo_fruta` e `estagio_maturacao`
+3. Enviar `temperatura_c`, `umidade_relativa_pct`, `variacao_temperatura_c`,
+   `variacao_umidade_pct`, `tipo_fruta` e `estagio_maturacao`
    para `POST http://localhost:8000/prever`.
 4. Receber a classificação da IA e salvar o resultado.
 
@@ -187,3 +201,13 @@ pytest testes/ -v
 5. Para iniciar a API: `python main.py`.
 6. Para rodar os testes: `pytest testes/ -v`.
 7. Para gerar os modelos: `cd src && python treinamento.py`.
+
+## Mudanças da versão anterior
+
+- Substituído **Isolation Forest** (não supervisionado) por **Random Forest Classifier** (supervisionado).
+- As features aumentaram de 2 para 4: adicionadas `variacao_temperatura_c` e `variacao_umidade_pct`.
+- O rótulo `rotulo_referencia` passou a ser usado como variável-alvo (y) no treinamento.
+- Os rótulos são convertidos para numéricos: `normal = 0`, `anomalia = 1`.
+- Cada perfil possui seu próprio modelo, treinado exclusivamente com registros daquele perfil.
+- A avaliação usa exclusivamente o conjunto de teste (sem vazamento de dados).
+- A API agora aceita as quatro features na requisição `POST /prever`.
